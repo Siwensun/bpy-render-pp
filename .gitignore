@@ -163,3 +163,9 @@ cython_debug/
 .vscode/
 
 outputs/
+
+# IDE specific
+.cursor/
+
+# Test directory
+tests/
