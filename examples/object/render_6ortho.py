@@ -1,6 +1,8 @@
 import os
 import json
 import numpy as np
+import random
+import bpy
 
 from bpyrenderer.camera import add_camera
 from bpyrenderer.engine import init_render_engine
@@ -40,28 +42,73 @@ set_env_map("../../assets/env_textures/brown_photostudio_02_1k.exr")
 # 4. Prepare cameras
 cam_pos, cam_mats, elevations, azimuths = get_camera_positions_on_sphere(
     center=(0, 0, 0),
-    radius=1.5,
-    elevations=[0],
-    azimuths=[item - 90 for item in [0, 45, 90, 180, 270, 315]],  # forward issue
+    radius=2.0,
+    elevations=[15, 45],
+    num_camera_per_layer=2
 )
-cameras = []
-for i, camera_mat in enumerate(cam_mats):
-    camera = add_camera(camera_mat, "ORTHO", add_frame=i < len(cam_mats) - 1)
-    cameras.append(camera)
 
 # 5. Set render outputs
 width, height = 1024, 1024
-enable_color_output(
-    width,
-    height,
-    output_dir,
-    file_format="WEBP",
-    mode="IMAGE",
-    film_transparent=True,
-)
-enable_depth_output(output_dir)
-enable_normals_output(output_dir)
-scene_manager.render()
+bpy.context.scene.render.resolution_x = width
+bpy.context.scene.render.resolution_y = height
+
+for setup in lighting_setups:
+    setup_dir = os.path.join(output_dir, setup)
+    os.makedirs(setup_dir, exist_ok=True)
+    
+    # Clear existing lights
+    for obj in bpy.data.objects:
+        if obj.type == 'LIGHT':
+            bpy.data.objects.remove(obj, do_unlink=True)
+    
+    # Setup lighting
+    if setup == 'env_map':
+        env_map = random.choice(env_maps)
+        set_env_map(env_map)
+    else:
+        set_background_color([0.0, 0.0, 0.0, 1.0])
+        if setup == 'single_point':
+            add_point_light((2, 2, 3), 1500)
+        else:  # multi_point
+            setup_random_lighting(3)
+    
+    # Add all cameras first
+    cameras = []
+    for i, camera_mat in enumerate(cam_mats):
+        camera = add_camera(camera_mat, add_frame=i < len(cam_mats) - 1)
+        cameras.append(camera)
+    
+    # Setup render outputs once
+    enable_color_output(width, height, setup_dir, mode="PNG", film_transparent=False)
+    # enable_depth_output(setup_dir)
+    # enable_normals_output(setup_dir)
+    # enable_albedo_output(setup_dir)
+    
+    # Single render call for all frames
+    scene_manager.render()
+    
+    # Save metadata
+    meta_info = {
+        "width": width,
+        "height": height,
+        "lighting_setup": setup,
+        "cameras": []
+    }
+    for i, (camera, pos) in enumerate(zip(cameras, cam_pos)):
+        meta_info["cameras"].append({
+            "index": f"{i:04d}",
+            "position": pos.tolist(),
+            "elevation": elevations[i],
+            "azimuth": azimuths[i],
+            "transform_matrix": cam_mats[i].tolist()
+        })
+    
+    with open(os.path.join(setup_dir, "meta.json"), "w") as f:
+        json.dump(meta_info, f, indent=4)
+    
+    # Clean up cameras
+    for camera in cameras:
+        bpy.data.objects.remove(camera, do_unlink=True)
 
 # Optional. convert normal (.exr) into .webp
 for file in os.listdir(output_dir):

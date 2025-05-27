@@ -203,9 +203,22 @@ def enable_albedo_output(output_dir: Optional[str] = "", file_prefix: str = "alb
 
 
 def enable_pbr_output(output_dir, attr_name, color_mode="RGBA", file_prefix: str = ""):
+    """Enable PBR output for rendering.
+    
+    Args:
+        output_dir: Directory to save the output
+        attr_name: Name of the PBR attribute to output (e.g., "Base Color", "Metallic", "Roughness")
+        color_mode: Color mode for the output ("RGBA" or "RGB")
+        file_prefix: Prefix for the output files
+    """
+    # Enable compositing and nodes first
+    bpy.context.scene.render.use_compositing = True
+    bpy.context.scene.use_nodes = True
+    
     if file_prefix == "":
         file_prefix = attr_name.lower().replace(" ", "-") + "_"
 
+    # Setup material nodes
     for material in bpy.data.materials:
         material.use_nodes = True
         node_tree = material.node_tree
@@ -218,7 +231,6 @@ def enable_pbr_output(output_dir, attr_name, color_mode="RGBA", file_prefix: str
             aov_output = nodes.new("ShaderNodeOutputAOV")
             aov_output.name = attr_name
             node_tree.links.new(linked_socket, aov_output.inputs[0])
-
         else:
             fixed_roughness = roughness_input.default_value
             if isinstance(fixed_roughness, float):
@@ -234,8 +246,8 @@ def enable_pbr_output(output_dir, attr_name, color_mode="RGBA", file_prefix: str
             aov_output.name = attr_name
             node_tree.links.new(roughness_value.outputs[0], aov_output.inputs[0])
 
+    # Setup compositing nodes
     tree = bpy.context.scene.node_tree
-    links = tree.links
     if "Render Layers" not in tree.nodes:
         rl = tree.nodes.new("CompositorNodeRLayers")
     else:
@@ -249,13 +261,13 @@ def enable_pbr_output(output_dir, attr_name, color_mode="RGBA", file_prefix: str
     roughness_file_output.format.color_depth = "16"
     roughness_file_output.file_slots.values()[0].path = file_prefix
 
+    # Setup AOV
     bpy.ops.scene.view_layer_add_aov()
     bpy.context.scene.view_layers["ViewLayer"].active_aov.name = attr_name
     roughness_alpha = tree.nodes.new(type="CompositorNodeSetAlpha")
     tree.links.new(rl.outputs[attr_name], roughness_alpha.inputs["Image"])
     tree.links.new(rl.outputs["Alpha"], roughness_alpha.inputs["Alpha"])
-
-    links.new(roughness_alpha.outputs["Image"], roughness_file_output.inputs["Image"])
+    tree.links.new(roughness_alpha.outputs["Image"], roughness_file_output.inputs["Image"])
 
 
 def get_keypoint_data(keypoint_names: Optional[List] = None):
@@ -460,3 +472,4 @@ def render_keypoint_map(
         np.save(meta_file, keypoint_metas)
 
     bpy.context.scene.frame_set(original_frame)
+

@@ -2,6 +2,7 @@ import numpy as np
 from PIL import Image
 from typing import List, Tuple
 import imageio
+import bpy
 
 
 def get_local2world_mat(blender_obj) -> np.ndarray:
@@ -60,37 +61,58 @@ def load_image(file_path: str, num_channels: int = 3) -> np.ndarray:
     :param num_channels: Number of channels to return.
     :return: The numpy array
     """
-    file_ending = file_path[file_path.rfind(".") + 1 :].lower()
-    if file_ending in ["exr", "png", "webp"]:
+    file_ending = file_path[file_path.rfind(".") + 1:].lower()
+    if file_ending == "exr":
+        # Use Blender's image loading for EXR
+        img = bpy.data.images.load(file_path)
+        pixels = np.array(img.pixels[:])
+        width, height = img.size
+        # Reshape and get required channels
+        pixels = pixels.reshape((height, width, 4))[:, :, :num_channels]
+        # Clean up
+        bpy.data.images.remove(img)
+        return pixels
+    elif file_ending in ["png", "webp"]:
         return imageio.imread(file_path)[:, :, :num_channels]
     elif file_ending in ["jpg"]:
         import cv2
-
         img = cv2.imread(file_path)  # reads an image in the BGR format
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         return img
     else:
-        raise NotImplementedError(
-            "File with ending " + file_ending + " cannot be loaded."
-        )
+        raise NotImplementedError("File with ending " + file_ending + " cannot be loaded.")
 
 
 def convert_normal_to_webp(src: str, dst: str, src_render: str):
+    """Convert normal map from EXR to WEBP format.
+    
+    Args:
+        src: Source EXR normal map path
+        dst: Destination WEBP path
+        src_render: Source render image path for alpha channel
+    """
+    # Load normal map data
     data = load_image(src, 4)
+    # EXR data is already in 0-1 range, multiply by 255 for 8-bit format
     normal_map = data[:, :, :3] * 255
+    
     try:
+        # Get alpha from render
         alpha_channel = load_image(src_render, 4)[:, :, 3]
-        for i in range(alpha_channel.shape[0]):
-            for j in range(alpha_channel.shape[1]):
-                alpha_channel[i][j] = 255 if alpha_channel[i][j] > 0 else 0
-        normal_map = np.concatenate(
-            (normal_map, alpha_channel[:, :, np.newaxis]), axis=2
-        )
-    except:
-        pass
+        # Threshold alpha for binary mask
+        alpha_channel = np.where(alpha_channel > 0, 255, 0).astype(np.uint8)
+        # Combine normal with alpha
+        normal_map = np.dstack((normal_map, alpha_channel))
+    except Exception as e:
+        print(f"Warning: Could not load alpha channel from render: {e}")
+        # If no alpha available, use full opacity
+        normal_map = np.dstack((normal_map, np.full_like(normal_map[:,:,0], 255)))
 
-    save_type = dst.split(".")[-1]
-    Image.fromarray(normal_map.astype(np.uint8)).save(dst, save_type, quality=100)
+    # Flip image vertically before saving
+    normal_map = np.flipud(normal_map)
+    
+    # Save as WEBP
+    Image.fromarray(normal_map.astype(np.uint8)).save(dst, "WEBP", quality=100)
 
 
 def convert_depth_to_webp(src: List[str], dst: List[str]) -> Tuple[float, float]:
@@ -110,8 +132,11 @@ def convert_depth_to_webp(src: List[str], dst: List[str]) -> Tuple[float, float]
     max_depth = float("-inf")
 
     for path in src:
-        # Read EXR image
-        depth = imageio.imread(path)
+        # Read EXR image using Blender's image loading
+        depth = load_image(path, num_channels=1)
+        # Ensure we have a 2D array by taking the first channel if needed
+        if depth.ndim > 2:
+            depth = depth[..., 0]
         # Create mask for valid depth values
         mask = np.ones_like(depth, dtype=float)
         mask[depth > 1000.0] = 0.0
@@ -137,8 +162,12 @@ def convert_depth_to_webp(src: List[str], dst: List[str]) -> Tuple[float, float]
         normalized_depth[~(mask > 0.5)] = 0.0
         # Convert to uint8
         depth_uint8 = normalized_depth.astype(np.uint8)
-        # Save as PNG
-        imageio.imwrite(output_path, depth_uint8)
+        # Convert single channel to RGB by repeating the channel
+        depth_rgb = np.dstack([depth_uint8] * 3)
+        # Flip image vertically before saving
+        depth_rgb = np.flipud(depth_rgb)
+        # Save using PIL
+        Image.fromarray(depth_rgb).save(output_path, quality=100)
 
     return min_depth, scale
 
